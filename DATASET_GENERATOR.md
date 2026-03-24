@@ -5,48 +5,6 @@ It composites the Eyecan logo onto random background images, applies geometric
 and photometric augmentation, and saves the result as a
 [pipelime Underfolder](https://github.com/eyecan-ai/pipelime-python) dataset.
 
----
-
-## Project structure
-
-```
-eyecan_challenge/
-├── src/
-│   └── dataset_generator.py   # this module
-├── logos/                     # PNG logo variants (RGBA or RGB)
-│   ├── logo_red.png
-│   ├── logo_black.png
-│   └── logo_white.png
-├── backgrounds/
-│   └── Images/                # any JPEG/PNG/BMP background images
-└── generated_dataset/         # output (created automatically)
-    └── data/
-        ├── 00000_image.jpg
-        ├── 00000_metadata.json
-        └── ...
-```
-
----
-
-## Requirements
-
-```
-python >= 3.10
-pipelime-python == 2.2.0
-albumentations >= 1.3
-opencv-python
-numpy
-tqdm
-```
-
-Install everything into your virtual environment:
-
-```bash
-pip install pipelime-python==2.2.0 albumentations opencv-python numpy tqdm
-```
-
----
-
 ## Usage
 
 ```bash
