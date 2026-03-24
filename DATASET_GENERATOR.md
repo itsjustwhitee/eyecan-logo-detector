@@ -15,9 +15,10 @@ python src/dataset_generator.py
 python src/dataset_generator.py \
     --bg_dir      backgrounds/Images \
     --logos_dir   logos \
-    --num_samples 1000 \
+    --num_samples 5000 \
     --img_size    640 480 \
     --output      generated_dataset \
+    --batch_size  200 \
     --num_workers 0 \
     --seed        42
 
@@ -31,9 +32,10 @@ python src/dataset_generator.py --help
 |---|---|---|
 | `--bg_dir` | `backgrounds/Images` | Directory of background images (searched recursively) |
 | `--logos_dir` | `logos` | Directory of logo PNGs (any colour variant, RGBA or RGB) |
-| `--num_samples` | `5000` | Number of images to generate |
+| `--num_samples` | `5000` | Total number of images to generate |
 | `--img_size W H` | `640 480` | Output resolution in pixels |
 | `--output` | `generated_dataset` | Destination Underfolder directory |
+| `--batch_size` | `200` | Samples per write batch (controls peak RAM — see below) |
 | `--num_workers` | `0` | Parallel writer processes (`0` = single-threaded) |
 | `--seed` | *(none)* | Integer seed for reproducibility |
 
@@ -81,12 +83,12 @@ A random image from `--bg_dir` is loaded and resized to the target resolution.
 
 ### 2 — Logo sizing
 A random PNG from `--logos_dir` is scaled so its longest side is at most
-**30 % of the shorter canvas dimension**.  This keeps the logo clearly visible
+**30 % of the shorter canvas dimension**. This keeps the logo clearly visible
 without dominating the scene.
 
 ### 3 — Spatial augmentation (on the RGBA canvas)
 The logo is first placed centred on a transparent canvas the same size as the
-output image.  Two transforms are then applied:
+output image. Two transforms are then applied:
 
 | Transform | Parameters | Effect |
 |---|---|---|
@@ -122,6 +124,37 @@ so it cannot alter the hue.
 
 ---
 
+## Memory management — streaming batch writes
+
+Generating a large dataset (e.g. 10 000 samples at 640×480) and holding all
+samples in RAM before writing would require **10+ GB of heap** — enough to OOM
+even on a 32 GB machine, because pipelime Item objects keep an uncompressed copy
+of the pixel data until they are serialised to disk.
+
+The generator solves this by writing in small batches:
+
+1. Generate `--batch_size` samples in memory.
+2. Write the batch to a temporary sub-directory via `to_underfolder().run()`.
+3. Rename the files into the main `data/` folder with the correct global index
+   offset (`00200_image.jpg`, `00400_image.jpg`, …).
+4. Drop the Python list (`batch = []`) — all `Sample` objects are garbage-collected
+   and the RAM is freed before the next batch begins.
+
+Peak RAM is therefore proportional to `batch_size`, not `num_samples`:
+
+| `--batch_size` | Peak RAM at 640×480 |
+|---|---|
+| 50 | ~44 MB |
+| **200** *(default)* | **~175 MB** |
+| 500 | ~440 MB |
+| 1 000 | ~880 MB |
+
+The default of 200 is conservative enough to work on any modern laptop.
+On a machine with ample free RAM you can raise it to 500–1 000 for slightly
+fewer disk round-trips without any risk of OOM.
+
+---
+
 ## Importing `generate_dataset` from a notebook
 
 The generator is exposed as a plain Python function, so it can be called
@@ -140,6 +173,7 @@ generate_dataset(
     num_samples = 2000,
     img_size    = (640, 480),
     output      = Path("generated_dataset"),
+    batch_size  = 200,
     num_workers = 0,
     seed        = 0,
 )
@@ -150,10 +184,9 @@ generate_dataset(
 ## Notes on `--num_workers`
 
 pipelime's Underfolder writer supports parallel writing via Python
-multiprocessing.  Each worker forks the process, duplicating the entire in-memory
-sample list.  On machines with limited RAM this causes the OS to kill the process
-(OOM).  The safe default is `0` (single-threaded).  Increase to `1` or `2` only
-if you have several GB of free RAM.
+multiprocessing. Each worker forks the process, duplicating the entire in-memory
+batch. The safe default is `0` (single-threaded). Increase to `1` or `2` only
+if you have several GB of free RAM per batch.
 
 ---
 
@@ -162,7 +195,7 @@ if you have several GB of free RAM.
 The original design used `PipelimeCommand` with the choixe/typer CLI layer.
 On Python 3.12 with pipelime 2.2.0, unset fields in a `PipelimeCommand` are
 returned as raw `FieldInfo` objects instead of their declared default values,
-making the command unusable without explicitly passing every argument.
+making the command unusable without passing every argument explicitly.
 
 The CLI is therefore implemented with plain `argparse`.
 pipelime is used only for `Sample`, `SamplesSequence`, and `to_underfolder()`,
