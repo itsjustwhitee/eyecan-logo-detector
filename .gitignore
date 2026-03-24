@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.env
+
+# Data & Dataset
+backgrounds/
+generated_dataset/
+data/
+
+# Model checkpoints
+*.pth
+*.onnx
+
+# IDE
+.vscode/
+.idea/
+
+# System
+.DS_Store
