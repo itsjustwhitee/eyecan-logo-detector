@@ -15,7 +15,16 @@ Output: pipelime Underfolder directory
 Usage:
     python src/dataset_generator.py --help
     python src/dataset_generator.py                          # all defaults
-    python src/dataset_generator.py --num_samples 1000 --seed 42
+    python src/dataset_generator.py --num_samples 5000 --batch_size 200 --seed 42
+
+Memory strategy
+---------------
+Samples are generated and written in small batches (--batch_size, default 200).
+Each batch is written to the Underfolder and then discarded before the next batch
+is built, so peak RAM is proportional to batch_size, not num_samples.
+
+At 640×480 RGB, one batch of 200 images ≈ 175 MB — well within budget even on
+machines with moderate RAM.
 """
 
 from __future__ import annotations
@@ -44,9 +53,6 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # pipelime item class resolution
 # ---------------------------------------------------------------------------
-# Item class names vary slightly across pipelime minor versions.
-# _get_cls picks the first name that actually exists in the module so the
-# generator works without pinning a specific sub-version.
 
 def _get_cls(module, candidates: List[str]) -> type:
     for name in candidates:
@@ -71,7 +77,7 @@ def _build_spatial_transform() -> A.Compose:
     """Geometric pipeline applied to the RGBA logo canvas before compositing.
 
     Affine handles scale, rotation and translation in one pass (always on).
-    Perspective adds a mild projective warp 50 % of the time, simulating
+    Perspective adds a mild projective warp 50% of the time, simulating
     the logo seen from an angle rather than head-on.
 
     KeypointParams propagates the logo centroid through every transform so
@@ -82,8 +88,8 @@ def _build_spatial_transform() -> A.Compose:
     return A.Compose(
         [
             A.Affine(
-                scale=(0.15, 0.85),          # logo occupies 15–85 % of the short edge
-                rotate=(-180, 180),          # full rotation range
+                scale=(0.15, 0.85),
+                rotate=(-180, 180),
                 translate_percent=(-0.35, 0.35),
                 p=1.0,
             ),
@@ -96,12 +102,9 @@ def _build_spatial_transform() -> A.Compose:
 def _build_photometric_transform() -> A.Compose:
     """Photometric pipeline applied to the final composited RGB image.
 
-    Only brightness/contrast and blur are used — deliberately no hue or
-    saturation transforms.  ColorJitter and RandomGamma modify channels
-    independently in ways that vary across albumentations versions, causing
-    strong green/magenta casts on the whole scene.
-    RandomBrightnessContrast applies the same scalar to all three channels,
-    so it can never shift the hue.
+    RandomBrightnessContrast applies the same scalar to all three channels
+    so it cannot shift the hue — safer than ColorJitter or RandomGamma which
+    modify channels independently and can cause strong green/magenta casts.
     """
     return A.Compose(
         [
@@ -153,20 +156,17 @@ def _generate_sample(
     photo_tf: A.Compose,
     max_logo_ratio: float = 0.30,
 ) -> Optional[Sample]:
-    """Build one composited sample.  Returns None on rejection (caller retries).
+    """Build one composited sample. Returns None on rejection (caller retries).
 
     Pipeline:
       1. Load and resize a random background to img_size.
       2. Pick a random logo; scale it so its longest side = max_logo_ratio * min(W,H).
       3. Centre the logo on a blank RGBA canvas the size of the output image.
-      4. Apply the spatial transform to the canvas while tracking the centroid keypoint.
-         If the keypoint exits the canvas → return None.
-      5. Alpha-blend the warped logo onto the background (float32 for precision).
-      6. Apply photometric augmentation to the composited RGB image.
+      4. Apply spatial transform while tracking the centroid keypoint.
+         If the keypoint exits the canvas → return None (rejection sampling).
+      5. Alpha-blend the warped logo onto the background.
+      6. Apply photometric augmentation.
       7. Wrap image + normalised centroid into a pipelime Sample.
-
-    All images are kept in RGB throughout.  pipelime's JpegImageItem uses PIL
-    internally and expects RGB — do not convert to BGR before handing off.
     """
     W, H = img_size
 
@@ -215,6 +215,57 @@ def _generate_sample(
 
 
 # ---------------------------------------------------------------------------
+# Batch writer
+# ---------------------------------------------------------------------------
+
+def _write_batch(
+    batch: List[Sample],
+    output: Path,
+    start_index: int,
+    num_workers: int,
+) -> None:
+    """Write *batch* to the Underfolder at *output*, numbering from *start_index*.
+
+    pipelime's to_underfolder() does not natively support append-mode with a
+    custom starting index, so we rename samples before writing so that their
+    keys are offset correctly, then call run() which flushes everything to disk.
+
+    Strategy: write each batch to a temporary sub-directory, then rename the
+    files into the main data/ folder with the correct global offset. This is
+    simpler and more robust than trying to hack pipelime's internal indexing.
+    """
+    import shutil
+
+    tmp_dir = output / "_batch_tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write the batch to a throw-away folder
+    try:
+        seq = SamplesSequence.from_list(batch)
+        seq.to_underfolder(str(tmp_dir), exists_ok=True).run(num_workers=num_workers)
+    except AttributeError:
+        seq = SamplesSequence(batch)  # type: ignore[arg-type]
+        seq.to_underfolder(str(tmp_dir), exists_ok=True).run(num_workers=num_workers)
+
+    # Move and rename files from tmp data/ into the real data/ folder
+    tmp_data  = tmp_dir / "data"
+    real_data = output / "data"
+    real_data.mkdir(exist_ok=True)
+
+    for src_path in sorted(tmp_data.iterdir()):
+        # src filename format: 00000_image.jpg  →  split on first underscore
+        parts     = src_path.name.split("_", 1)
+        local_idx = int(parts[0])
+        suffix    = parts[1]                          # e.g. "image.jpg"
+        global_idx = start_index + local_idx
+        dst_path  = real_data / f"{global_idx:05d}_{suffix}"
+        shutil.move(str(src_path), str(dst_path))
+
+    # Clean up the temporary directory
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
 # Main generation function
 # ---------------------------------------------------------------------------
 
@@ -224,11 +275,16 @@ def generate_dataset(
     num_samples: int,
     img_size: Tuple[int, int],
     output: Path,
+    batch_size: int = 200,
     num_workers: int = 0,
     seed: Optional[int] = None,
 ) -> None:
-    """Generate *num_samples* composited images and write a pipelime Underfolder."""
+    """Generate *num_samples* composited images and write a pipelime Underfolder.
 
+    Samples are produced and flushed to disk in chunks of *batch_size* so that
+    peak RAM usage is proportional to batch_size rather than num_samples.
+    At 640×480 the default batch of 200 images uses roughly 175 MB of RAM.
+    """
     if seed is not None:
         random.seed(seed)
         np.random.seed(seed)
@@ -240,57 +296,57 @@ def generate_dataset(
     print(f"[config]   num_samples   : {num_samples}")
     print(f"[config]   img_size      : {img_size}  (W x H)")
     print(f"[config]   output        : {output}")
+    print(f"[config]   batch_size    : {batch_size}")
     print(f"[config]   num_workers   : {num_workers}")
     print(f"[config]   seed          : {seed}")
 
-    print("\nLoading logos …")
+    print("\nLoading logos ...")
     logos = _load_logos(logos_dir)
     print(f"  -> {len(logos)} variant(s) loaded.")
 
-    print("Indexing backgrounds …")
+    print("Indexing backgrounds ...")
     bg_paths = _load_bg_paths(bg_dir)
     print(f"  -> {len(bg_paths)} image(s) found.")
 
     spatial_tf = _build_spatial_transform()
     photo_tf   = _build_photometric_transform()
 
-    samples: List[Sample] = []
-    max_attempts = num_samples * 10  # generous budget for rejection-sampling
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "data").mkdir(exist_ok=True)
 
-    print(f"\nGenerating {num_samples} samples …")
+    total_written = 0
+    max_attempts  = num_samples * 10
+
+    print(f"\nGenerating {num_samples} samples in batches of {batch_size} ...")
     with tqdm(total=num_samples, unit="sample") as pbar:
+        batch: List[Sample] = []
         attempts = 0
-        while len(samples) < num_samples and attempts < max_attempts:
+
+        while total_written < num_samples and attempts < max_attempts:
             attempts += 1
             s = _generate_sample(logos, bg_paths, img_size, spatial_tf, photo_tf)
-            if s is not None:
-                samples.append(s)
-                pbar.update(1)
+            if s is None:
+                continue
 
-    if len(samples) < num_samples:
-        print(f"\n[WARNING] Only {len(samples)}/{num_samples} samples generated "
+            batch.append(s)
+            pbar.update(1)
+
+            # Flush batch to disk when full or when we have reached the target
+            if len(batch) == batch_size or (total_written + len(batch)) == num_samples:
+                _write_batch(batch, output, start_index=total_written, num_workers=num_workers)
+                total_written += len(batch)
+                batch = []          # ← release all Sample objects → RAM freed
+
+    if total_written < num_samples:
+        print(f"\n[WARNING] Only {total_written}/{num_samples} samples written "
               f"after {attempts} attempts — check your assets.")
 
-    print(f"\nWriting Underfolder to: {output}")
-    output.mkdir(parents=True, exist_ok=True)
-
-    # SamplesSequence.from_list is standard in 2.x; bare constructor as fallback.
-    try:
-        seq = SamplesSequence.from_list(samples)
-    except AttributeError:
-        seq = SamplesSequence(samples)  # type: ignore[arg-type]
-
-    seq.to_underfolder(str(output), exists_ok=True).run(num_workers=num_workers)
-    print("Done!")
+    print(f"\nDone! {total_written} samples written to: {output}")
 
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
-# We use plain argparse rather than pipelime's PipelimeCommand/choixe CLI.
-# In pipelime 2.2.0 on Python 3.12, unset PipelimeCommand fields are returned
-# as raw FieldInfo objects instead of their declared defaults, making the
-# command unusable without passing every argument explicitly.
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
@@ -298,15 +354,20 @@ def _parse_args() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--bg_dir",      type=Path, default=Path("backgrounds/Images"),
-                   help="Directory with background JPEG/PNG images (searched recursively).")
+                   help="Directory with background images (searched recursively).")
     p.add_argument("--logos_dir",   type=Path, default=Path("logos"),
                    help="Directory with logo PNGs (RGBA or RGB, any colour variant).")
     p.add_argument("--num_samples", type=int,  default=5000,
-                   help="Number of samples to generate.")
+                   help="Total number of samples to generate.")
     p.add_argument("--img_size",    type=int,  nargs=2, default=[640, 480],
                    metavar=("W", "H"), help="Output resolution.")
     p.add_argument("--output",      type=Path, default=Path("generated_dataset"),
                    help="Destination Underfolder directory.")
+    p.add_argument("--batch_size",  type=int,  default=200,
+                   help=(
+                       "Samples per write batch. Lower = less RAM, more disk I/O. "
+                       "At 640×480 the default (200) uses ~175 MB peak RAM per batch."
+                   ))
     p.add_argument("--num_workers", type=int,  default=0,
                    help="Parallel writer processes. 0 = single-threaded (safe default).")
     p.add_argument("--seed",        type=int,  default=None,
@@ -322,6 +383,7 @@ if __name__ == "__main__":
         num_samples = args.num_samples,
         img_size    = tuple(args.img_size),
         output      = args.output,
+        batch_size  = args.batch_size,
         num_workers = args.num_workers,
         seed        = args.seed,
     )
