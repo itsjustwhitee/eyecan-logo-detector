@@ -1,14 +1,16 @@
 # Eyecan Challenge 02 — Dataset Generator
 
 Synthetic training-data generator for the **Eyecan Logo Detector** challenge.
-It composites the Eyecan logo onto random background images, applies geometric
+Composites the Eyecan logo onto random background images, applies geometric
 and photometric augmentation, and saves the result as a
 [pipelime Underfolder](https://github.com/eyecan-ai/pipelime-python) dataset.
+
+---
 
 ## Usage
 
 ```bash
-# All defaults (5000 samples, 640×480, backgrounds/Images, logos/)
+# All defaults (5000 samples, 640×480)
 python src/dataset_generator.py
 
 # Custom run
@@ -30,12 +32,12 @@ python src/dataset_generator.py --help
 
 | Argument | Default | Description |
 |---|---|---|
-| `--bg_dir` | `backgrounds/Images` | Directory of background images (searched recursively) |
-| `--logos_dir` | `logos` | Directory of logo PNGs (any colour variant, RGBA or RGB) |
+| `--bg_dir` | `backgrounds/Images` | Background images directory (recursive) |
+| `--logos_dir` | `logos` | Logo PNGs — any colour variant, RGBA or RGB |
 | `--num_samples` | `5000` | Total number of images to generate |
 | `--img_size W H` | `640 480` | Output resolution in pixels |
 | `--output` | `generated_dataset` | Destination Underfolder directory |
-| `--batch_size` | `200` | Samples per write batch (controls peak RAM — see below) |
+| `--batch_size` | `200` | Samples per write batch — controls peak RAM |
 | `--num_workers` | `0` | Parallel writer processes (`0` = single-threaded) |
 | `--seed` | *(none)* | Integer seed for reproducibility |
 
@@ -43,128 +45,158 @@ python src/dataset_generator.py --help
 
 ## Output format — pipelime Underfolder
 
-Each sample is stored as two files sharing the same numeric prefix:
-
 ```
-00042_image.jpg       — composited RGB scene
-00042_metadata.json   — {"x": 0.4231, "y": 0.6180}
+generated_dataset/
+  data/
+    00000_image.jpg        ← composited RGB scene
+    00000_metadata.json    ← {"x": 0.4231, "y": 0.6180}
+    00001_image.jpg
+    ...
 ```
 
-`x` and `y` are the **normalised coordinates** of the logo centroid
-(divided by image width and height respectively), so they are always in
-`[0.0, 1.0]` regardless of resolution.
+`x` and `y` are the **normalised coordinates** of the logo centroid —
+divided by image width and height — so they are always in `[0.0, 1.0]`
+regardless of resolution.
 
-To load the dataset with pipelime:
+Loading the dataset in Python:
 
 ```python
 from pipelime.sequences import SamplesSequence
 
-dataset = SamplesSequence.from_underfolder("generated_dataset")
-sample  = dataset[0]
-
-image    = sample["image"]()      # numpy uint8 RGB array
-metadata = sample["metadata"]()   # dict: {"x": float, "y": float}
+dataset  = SamplesSequence.from_underfolder("generated_dataset")
+sample   = dataset[0]
+image    = sample["image"]()      # numpy uint8 RGB (H×W×3)
+metadata = sample["metadata"]()   # {"x": float, "y": float}
 ```
 
 ---
 
-## How a sample is generated
+## Generation pipeline
 
 ```
-background image  ──┐
-                     ├─► composite ──► photometric aug ──► save
-logo PNG (RGBA)  ──► spatial aug ──┘
-                        │
-                    keypoint tracked ──► normalised (x, y) ──► metadata
+background image ──┐
+                    ├──► alpha composite ──► scene photometric ──► save
+logo (RGBA)        │
+  │                │
+  ▼                │
+spatial aug        │
+  │ (keypoint      │
+  │  tracked)      │
+  ▼                │
+logo color aug ────┘
+  │
+soft shadow ──► applied to background before composite
 ```
 
-### 1 — Background
-A random image from `--bg_dir` is loaded and resized to the target resolution.
+### Step 1 — Background
+A random image from `--bg_dir` is loaded with OpenCV (BGR) and immediately
+converted to RGB. It is resized to the target resolution.
 
-### 2 — Logo sizing
+### Step 2 — Logo sizing
 A random PNG from `--logos_dir` is scaled so its longest side is at most
-**30 % of the shorter canvas dimension**. This keeps the logo clearly visible
-without dominating the scene.
+**30 % of the shorter canvas dimension**, keeping the logo visible without
+dominating the scene.
 
-### 3 — Spatial augmentation (on the RGBA canvas)
-The logo is first placed centred on a transparent canvas the same size as the
-output image. Two transforms are then applied:
+### Step 3 — Spatial augmentation
+The logo is centred on a blank RGBA canvas the same size as the output.
+Two transforms are applied to the canvas while **tracking a keypoint at the
+logo centroid**:
 
 | Transform | Parameters | Effect |
 |---|---|---|
 | `Affine` | scale 0.15–0.85, rotate ±180°, translate ±35 % | Size, orientation, position diversity |
-| `Perspective` | warp 2–7 %, p=0.5 | Simulates logo seen from an angle |
+| `Perspective` | warp 2–7 %, p=0.5 | Logo seen from an angle |
 
-A **keypoint at the logo centroid** travels through both transforms.
-If the keypoint exits the canvas after warping the sample is discarded and
-regenerated — this is the rejection-sampling loop in `_generate_sample`.
+If the centroid exits the canvas the sample is discarded and regenerated
+(rejection sampling). The max attempt budget is `num_samples × 10`.
 
-### 4 — Alpha compositing
-The warped RGBA logo is blended onto the RGB background using its alpha channel:
+### Step 4 — Logo-only colour augmentation
+Applied to the warped logo **before compositing**, only on pixels where
+`alpha > 0`. The background is not touched.
+
+| Transform | Parameters | Rationale |
+|---|---|---|
+| `HueSaturationValue` | hue ±8, sat ±20, val ±15, p=0.65 | Simulates different print materials, coloured lighting on the logo surface |
+| `RGBShift` | ±10 per channel, p=0.3 | Subtle independent per-channel offset for further colour diversity |
+
+**Why only on the logo?** Applying colour transforms to the full scene after
+compositing shifts the hue of the background in ways that vary unpredictably
+across albumentations versions. Operating on the logo alone — before blending —
+avoids this issue entirely and produces clean, realistic results.
+
+### Step 5 — Soft shadow
+Before compositing, the background is darkened beneath the logo using a
+blurred, offset copy of the logo's alpha mask. This gives the logo a subtle
+physical anchor, making it look less like a sticker pasted on top.
+
+| Parameter | Value | Effect |
+|---|---|---|
+| `strength` | 0.12 | Maximum 12 % darkening |
+| `blur_ksize` | 25 | Soft, diffuse penumbra |
+| `shift` | (3, 4) px | Simulates light from top-left |
+
+### Step 6 — Alpha compositing
+The warped, colour-augmented RGBA logo is blended onto the shadow-modified
+background in `float32` to avoid integer rounding artefacts:
 
 ```
 output = background × (1 − α) + logo_rgb × α
 ```
 
-Blending is done in `float32` to avoid integer rounding artefacts,
-then cast back to `uint8`.
-
-### 5 — Photometric augmentation (on the composited scene)
+### Step 7 — Scene-level photometric augmentation
+Applied to the **final composited image** so background and logo are
+perturbed together, simulating global lighting conditions.
 
 | Transform | Parameters | Effect |
 |---|---|---|
-| `RandomBrightnessContrast` | ±15 %, p=0.6 | Lighting variation |
-| `GaussianBlur` | kernel 3–5, p=0.1 | Defocus / motion blur |
+| `RandomBrightnessContrast` | ±35 % brightness, ±25 % contrast, p=0.7 | Dark scenes, overexposed scenes, midtone variation |
+| `GaussianBlur` | kernel 3–11, p=0.15 | Defocus, motion blur, surveillance-camera quality |
+| `ImageCompression` | quality 70–95, p=0.2 | JPEG artefacts common in real photos and video frames |
 
-**Why not ColorJitter or RandomGamma?**
-Both transforms modify R, G and B channels with independent values, causing
-visible hue shifts (strong green or magenta tints) across the entire scene.
-`RandomBrightnessContrast` applies the same scalar to all three channels,
-so it cannot alter the hue.
+The wide brightness range (`±0.35`) is intentional: it produces realistically
+dark (poorly lit rooms) and overexposed (outdoor sun) scenes without distorting
+colour relationships between logo and background.
+
+**Why `RandomBrightnessContrast` and not `ColorJitter`?**
+`RandomBrightnessContrast` applies the same scalar to all three channels, so
+it cannot shift hue. `ColorJitter` and `RandomGamma` modify R, G, B
+independently with behaviour that differs across albumentations versions,
+producing strong green or magenta casts on the whole scene.
 
 ---
 
-## Memory management — streaming batch writes
+## Memory management
 
-Generating a large dataset (e.g. 10 000 samples at 640×480) and holding all
-samples in RAM before writing would require **10+ GB of heap** — enough to OOM
-even on a 32 GB machine, because pipelime Item objects keep an uncompressed copy
-of the pixel data until they are serialised to disk.
+Generating 10 000 samples at 640×480 and holding them all in RAM before
+writing would require 10+ GB — enough to trigger an OOM kill.
+pipelime `Item` objects keep an uncompressed copy of the pixel data until
+they are serialised to disk.
 
-The generator solves this by writing in small batches:
-
+The generator writes in small batches:
 1. Generate `--batch_size` samples in memory.
-2. Write the batch to a temporary sub-directory via `to_underfolder().run()`.
-3. Rename the files into the main `data/` folder with the correct global index
-   offset (`00200_image.jpg`, `00400_image.jpg`, …).
-4. Drop the Python list (`batch = []`) — all `Sample` objects are garbage-collected
-   and the RAM is freed before the next batch begins.
+2. Write the batch to a temporary sub-directory.
+3. Rename the files into the main `data/` folder with the correct global
+   index offset.
+4. Drop the Python list (`batch = []`) — all `Sample` objects are garbage-
+   collected and RAM is freed before the next batch begins.
 
-Peak RAM is therefore proportional to `batch_size`, not `num_samples`:
+Peak RAM at 640×480:
 
-| `--batch_size` | Peak RAM at 640×480 |
+| `--batch_size` | Peak RAM |
 |---|---|
 | 50 | ~44 MB |
 | **200** *(default)* | **~175 MB** |
 | 500 | ~440 MB |
 | 1 000 | ~880 MB |
 
-The default of 200 is conservative enough to work on any modern laptop.
-On a machine with ample free RAM you can raise it to 500–1 000 for slightly
-fewer disk round-trips without any risk of OOM.
-
 ---
 
-## Importing `generate_dataset` from a notebook
-
-The generator is exposed as a plain Python function, so it can be called
-directly from a Jupyter / Colab notebook without going through the CLI:
+## Importing from a notebook
 
 ```python
 from pathlib import Path
 import sys
 sys.path.insert(0, "src")
-
 from dataset_generator import generate_dataset
 
 generate_dataset(
@@ -183,20 +215,17 @@ generate_dataset(
 
 ## Notes on `--num_workers`
 
-pipelime's Underfolder writer supports parallel writing via Python
-multiprocessing. Each worker forks the process, duplicating the entire in-memory
-batch. The safe default is `0` (single-threaded). Increase to `1` or `2` only
-if you have several GB of free RAM per batch.
+pipelime's Underfolder writer uses Python multiprocessing. Each worker forks
+the process and duplicates the full batch in RAM. Keep `num_workers=0`
+(single-threaded) unless you have several GB of free RAM per batch.
 
 ---
 
-## Notes on pipelime 2.2.0 compatibility
+## Notes on pipelime 2.2.0 / Python 3.12 compatibility
 
-The original design used `PipelimeCommand` with the choixe/typer CLI layer.
-On Python 3.12 with pipelime 2.2.0, unset fields in a `PipelimeCommand` are
-returned as raw `FieldInfo` objects instead of their declared default values,
-making the command unusable without passing every argument explicitly.
-
-The CLI is therefore implemented with plain `argparse`.
-pipelime is used only for `Sample`, `SamplesSequence`, and `to_underfolder()`,
-where it works correctly.
+`PipelimeCommand` with the choixe/typer CLI was the original design.
+On Python 3.12 with pipelime 2.2.0, unset fields are returned as raw
+`FieldInfo` objects rather than their declared default values, making the
+command unusable without passing every argument. The CLI is therefore
+implemented with plain `argparse`; pipelime is used only for
+`Sample`, `SamplesSequence`, and `to_underfolder()`, where it works correctly.
