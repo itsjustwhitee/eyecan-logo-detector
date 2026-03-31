@@ -9,6 +9,7 @@ __pycache__/
 backgrounds/*
 generated_dataset/
 data/
+test_data/
 
 # Model checkpoints
 *.pt
