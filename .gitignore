@@ -6,11 +6,12 @@ __pycache__/
 .env
 
 # Data & Dataset
-backgrounds/
+backgrounds/*
 generated_dataset/
 data/
 
 # Model checkpoints
+*.pt
 *.pth
 *.onnx
 

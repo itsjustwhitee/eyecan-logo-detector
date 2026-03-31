@@ -12,7 +12,7 @@ The project is divided into two main components:
 
 ## Quick Start
 For detailed instructions on how to generate the training data, please refer to:
-- 👉 [**Module B Documentation (Dataset Generator)**](DATASET_GENERATOR.md)
+- 👉 [**Module B Documentation (Dataset Generator)**](MODULE-B.md)
 
 ## Tech Stack
 - **Language**: Python 3.12

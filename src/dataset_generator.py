@@ -85,12 +85,13 @@ def _build_spatial_transform() -> A.Compose:
     return A.Compose(
         [
             A.Affine(
-                scale=(0.15, 0.85),
+                scale=(0.025, 0.85),
                 rotate=(-180, 180),
-                translate_percent=(-0.35, 0.35),
-                p=1.0,
+                translate_percent=(-0.25, 0.25),
+                shear=(-10, 10),
+                p=0.99,
             ),
-            A.Perspective(scale=(0.02, 0.07), p=0.5),
+            A.Perspective(scale=(0.05, 0.10), p=0.5),
         ],
         keypoint_params=A.KeypointParams(format="xy", remove_invisible=True),
     )
@@ -117,7 +118,8 @@ def _build_scene_transform() -> A.Compose:
             # Wide range to cover dark scenes, overexposed scenes, and midtones
             A.RandomBrightnessContrast(brightness_limit=0.35, contrast_limit=0.25, p=0.7),
             # Occasional heavy blur to simulate out-of-focus or moving camera
-            A.GaussianBlur(blur_limit=(3, 11), p=0.15),
+            A.GaussianBlur(blur_limit=(3, 8), p=0.15),
+            A.GaussNoise(var_limit=(1.0, 7.0), p=0.1),
             # JPEG compression artefacts — common in real photos and video frames
             A.ImageCompression(quality_lower=70, quality_upper=95, p=0.2),
         ]
@@ -240,7 +242,7 @@ def _generate_sample(
     img_size: Tuple[int, int],
     spatial_tf: A.Compose,
     scene_tf: A.Compose,
-    max_logo_ratio: float = 0.30,
+    max_logo_ratio: float = 0.5,
 ) -> Optional[Sample]:
     """Build one composited sample.  Returns None on rejection (caller retries).
 
