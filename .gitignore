@@ -7,13 +7,14 @@ __pycache__/
 
 # Data & Dataset
 backgrounds/*
-generated_dataset/
-data/
-test_*/
+generated_dataset/*
+data/*
+test_*/*
+*NOTES*.md
 
 # Model checkpoints
-*.pt
-*.pth
+#*.pt
+#*.pth
 *.onnx
 
 # IDE
