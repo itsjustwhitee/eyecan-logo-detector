@@ -9,7 +9,6 @@ __pycache__/
 backgrounds/*
 generated_dataset/*
 data/*
-test_*/*
 *NOTES*.md
 
 # Model checkpoints
