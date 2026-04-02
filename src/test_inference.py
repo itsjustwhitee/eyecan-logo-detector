@@ -4,10 +4,14 @@ Batch Inference & Visualisation Script
 Runs the trained LogoDetector on a directory of real-world test images.
 Displays each prediction in an interactive GUI window (if available),
 and saves the annotated results to an output directory.
+
+Usage:
+    python src/test_inference.py --checkpoint checkpoints/best_20k.pt --input test_images
 """
 
 import os
 import sys
+import argparse
 from pathlib import Path
 from typing import List
 
@@ -23,14 +27,29 @@ def _get_image_paths(directory: Path) -> List[Path]:
     extensions =["*.jpg", "*.jpeg", "*.png", "*.bmp", "*.JPG", "*.JPEG", "*.PNG"]
     return[p for ext in extensions for p in directory.rglob(ext)]
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run batch inference on a folder of real-world images.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    parser.add_argument("--checkpoint", type=Path, default=Path("checkpoints/best.pt"),
+                        help="Path to the trained model weights (.pt file).")
+    parser.add_argument("--input", type=Path, default=Path("test_images"),
+                        help="Directory containing the images to test.")
+    parser.add_argument("--output", type=Path, default=Path("test_results"),
+                        help="Directory where annotated images will be saved.")
+    return parser.parse_args()
+
 def main() -> None:
-    input_dir = Path("test_images")
-    output_dir = Path("test_results")
-    checkpoint_path = Path("checkpoints/best.pt")
+    args = _parse_args()
+
+    input_dir = args.input
+    output_dir = args.output
+    checkpoint_path = args.checkpoint
 
     # Ensure directories exist
-    input_dir.mkdir(exist_ok=True)
-    output_dir.mkdir(exist_ok=True)
+    input_dir.mkdir(exist_ok=True, parents=True)
+    output_dir.mkdir(exist_ok=True, parents=True)
 
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}. Train the model first.")
@@ -41,7 +60,6 @@ def main() -> None:
         return
 
     # Check if we are running in a headless environment (like Google Colab)
-    # 'DISPLAY' is present on Linux GUI sessions; win32 implies Windows (usually has GUI)
     has_gui = os.environ.get("DISPLAY") is not None or sys.platform == "win32"
     if not has_gui:
         print("[INFO] Headless environment detected. GUI windows will be disabled.")
@@ -62,7 +80,7 @@ def main() -> None:
         H, W = bgr.shape[:2]
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
-        # Forward pass: predict normalized coordinates [0.0, 1.0]
+        # Forward pass: predict normalized coordinates[0.0, 1.0]
         x_norm, y_norm = detector.predict(rgb, device=device)
         
         # Denormalize to absolute pixel coordinates
@@ -94,7 +112,7 @@ def main() -> None:
 
         # Display only if GUI is available
         if has_gui:
-            window_name = f"Prediction: {img_path.name} - PRESS ANY KEY"
+            window_name = f"Prediction: {img_path.name} - PRESS ANY KEY TO CONTINUE"
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
             cv2.resizeWindow(window_name, 800, 600)
             cv2.imshow(window_name, bgr)

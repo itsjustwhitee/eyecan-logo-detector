@@ -12,8 +12,9 @@ data/*
 *NOTES*.md
 
 # Model checkpoints
-#*.pt
-#*.pth
+*.pt
+!best_*k.pt
+*.pth
 *.onnx
 
 # IDE
