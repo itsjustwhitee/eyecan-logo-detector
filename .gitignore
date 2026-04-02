@@ -10,6 +10,8 @@ backgrounds/*
 generated_dataset/*
 data/*
 *NOTES*.md
+demo*.py
+demo*/
 
 # Model checkpoints
 *.pt
