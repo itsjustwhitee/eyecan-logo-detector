@@ -7,7 +7,7 @@ and photometric augmentation, and saves the result as a
 
 For the backgrounds database, the [MIT Indoor Scenes](https://www.kaggle.com/datasets/itsahmad/indoor-scenes-cvpr-2019?resource=download) was used.
 >The database contains 67 Indoor categories, and a total of 15620 images. The number of images varies across categories, but there are at least 100 images per category. All images are in jpg format. The images provided here are for research purposes only.
- 
+>For reproducibility and fast testing, a small pool of this database of images is present in `sample_background/` (~1000 images). Otherwhise the full dataset is available on the page above.
 ---
  
 ## Usage
