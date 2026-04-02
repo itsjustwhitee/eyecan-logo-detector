@@ -8,6 +8,7 @@ Predicts the normalized coordinates (x, y) ∈ [0, 1] of the logo center in an i
 ## Table of Contents
 
 - [Architecture and Technical Choices](#architecture-and-technical-choices)
+- [Pre-trained Checkpoint](#pre-trained-checkpoint)
 - [Usage — Training](#usage--training)
 - [Usage — Inference](#usage--inference)
 - [Dataset Format](#dataset-format)
@@ -53,20 +54,20 @@ Feature Vector (576-dimensional)
 
 **Technical choices:**
 
-1. **Hardswish activation**: Efficient activation function used in MobileNetV3
-   - Maintains consistency with the backbone
-   - Better gradient flow compared to ReLU for regression
+1. **Hardswish activation**: Efficient activation function used in MobileNetV3.
+   - Maintains consistency with the backbone.
+   - Better gradient flow compared to ReLU for regression.
 
-2. **Dropout(0.3)**: Regularization to prevent overfitting
-   - Essential on synthetic datasets (10k–20k samples)
-   - Automatically disabled in `.eval()` mode
+2. **Dropout(0.3)**: Regularization to prevent overfitting.
+   - Essential on synthetic datasets (10k–20k samples).
+   - Automatically disabled in `.eval()` mode.
 
-3. **Final Sigmoid**: Guarantees output ∈ (0, 1) **without post-processing**
-   - Resolution-agnostic normalized coordinates
-   - No manual clamping required
+3. **Final Sigmoid**: Guarantees output ∈ (0, 1) **without post-processing**.
+   - Resolution-agnostic normalized coordinates.
+   - No manual clamping required.
 
-4. **Xavier initialization**: Small initial weights for stability
-   - Prevents Sigmoid saturation at the start of training
+4. **Xavier initialization**: Small initial weights for stability.
+   - Prevents Sigmoid saturation at the start of training.
 
 ### Loss Function: Smooth L1 (Huber Loss)
 
@@ -88,6 +89,41 @@ SmoothL1(pred, target) = {
 **Discarded alternative:** Pure MSE
 - Sensitive to outliers: a single sample with error >0.5 dominates the gradient.
 - On synthetic datasets with random backgrounds, some samples can confuse the model.
+
+---
+
+## Pre-trained Checkpoint
+
+A checkpoint trained on **20k synthetic images** is included in the repository:
+
+```
+checkpoints/
+  └── best_20k.pt    ← ready-to-use, trained with 20k samples
+```
+
+You can use it directly for inference without training:
+
+```bash
+python src/logo_detector.py --infer \
+    --checkpoint checkpoints/best_20k.pt \
+    --image test_images/photo.jpg
+```
+
+Or load it in a notebook:
+
+```python
+from logo_detector import LogoDetector
+detector = LogoDetector.load("checkpoints/best_20k.pt")
+x, y = detector.predict(rgb_image)
+```
+
+**Training conditions for `best_20k.pt`:**
+- Dataset: 20k synthetic images, `sample_background/` pool (~1000 backgrounds).
+- Resolution: 640×480.
+- Epochs: 100 (early stopping to 30-45).
+- Seed: default.
+
+You can train your own checkpoint and compare it against this baseline.
 
 ---
 
@@ -115,7 +151,7 @@ python src/logo_detector.py --train \
 | `--output_dir` | `checkpoints` | Where to save `best.pt`, `last.pt`, `training_log.json`. |
 | `--epochs` | `30` | Maximum number of epochs. |
 | `--lr` | `1e-3` | Initial learning rate (AdamW). |
-| `--batch_size` | `32` | Samples per mini-batch |
+| `--batch_size` | `32` | Samples per mini-batch. |
 | `--val_split` | `0.15` | Fraction of the dataset used for validation. |
 | `--dropout` | `0.3` | Dropout probability in the head. |
 | `--seed` | `0` | Seed for reproducibility. |
@@ -144,7 +180,7 @@ checkpoints/
 ]
 ```
 
-**`val_acc_pct` metric** reppresents the percentage of predictions with Euclidean error < 10% of the short side (challenge requirement).
+**`val_acc_pct` metric** represents the percentage of predictions with Euclidean error < 10% of the short side (challenge requirement).
 At 640×480, the short side is 480 px ⇒ threshold = 48 px.
 
 ---
@@ -169,11 +205,10 @@ python src/logo_detector.py --infer \
 
 ```python
 import cv2
-from pathlib import Path
 from logo_detector import LogoDetector
 
-# Load model
-detector = LogoDetector.load("checkpoints/best.pt")
+# Load model (use best_20k.pt for the pre-trained checkpoint)
+detector = LogoDetector.load("checkpoints/best_20k.pt")
 
 # Read image (OpenCV BGR → RGB)
 bgr = cv2.imread("test_images/photo.jpg")
@@ -193,6 +228,7 @@ print(f"Logo centroid → ({px} px, {py} px)")
 - `predict()` automatically sets the model to `.eval()` and disables dropout.
 - Input: numpy array RGB uint8, **any resolution** (internally resized to 224×224).
 - Output: normalized coordinates ∈ [0, 1] (multiply by W, H for absolute pixels).
+- `predict()` accepts an optional `device` argument to override auto-detection.
 
 ---
 
@@ -253,7 +289,7 @@ _preprocess = transforms.Compose([
     transforms.Resize((224, 224), antialias=True),   # canonical MobileNet size
     transforms.Normalize(
         mean=(0.485, 0.456, 0.406),                  # ImageNet mean
-        std=(0.224, 0.224, 0.224)                     # ImageNet std
+        std=(0.224, 0.224, 0.224)                    # ImageNet std
     ),
 ])
 ```
@@ -265,11 +301,11 @@ The training loop does **not** re-apply augmentation to avoid distributional mis
 
 | Component | Configuration | Rationale |
 |---|---|---|
-| **Optimizer** | AdamW, `lr=1e-3`, `weight_decay=1e-4` | AdamW prevents weight explosion, implicit L2 decay |
-| **LR Scheduler** | CosineAnnealingLR, `T_max=epochs`, `eta_min=lr*0.01` | Smooth decay from `lr` to `lr/100`, no manual step |
-| **Gradient Clipping** | `max_norm=1.0` | Prevents explosion on batches with outliers |
-| **Early Stopping** | patience=10 epochs on `val_loss` | Avoids overfitting, typically stops at epoch 30–45 |
-| **Train/Val Split** | 85% / 15% random split (seeded) | Small but sufficient validation set (750 samples @ 5k) |
+| **Optimizer** | AdamW, `lr=1e-3`, `weight_decay=1e-4` | AdamW prevents weight explosion, implicit L2 decay. |
+| **LR Scheduler** | CosineAnnealingLR, `T_max=epochs`, `eta_min=lr*0.01` | Smooth decay from `lr` to `lr/100`, no manual step. |
+| **Gradient Clipping** | `max_norm=1.0` | Prevents explosion on batches with outliers. |
+| **Early Stopping** | patience=10 epochs on `val_loss` | Avoids overfitting, typically stops at epoch 30–45. |
+| **Train/Val Split** | 85% / 15% random split (seeded) | Small but sufficient validation set (750 samples @ 5k). |
 
 ### Typical behavior
 
@@ -279,9 +315,9 @@ The training loop does **not** re-apply augmentation to avoid distributional mis
 - Validation accuracy (10% threshold): 70–85%
 
 > **Note:** Accuracy never reaches 100% because:
-> 1. Synthetic dataset with extreme augmentation (rotation ±180°, perspective warp)
-> 2. Some very complex backgrounds confuse the model
-> 3. Very small logos or logos in extreme corners are inherently ambiguous
+> 1. Synthetic dataset with wide augmentation range (scale 0.025–0.85, rotation ±180°, perspective warp).
+> 2. Some very complex backgrounds confuse the model.
+> 3. Very small logos or logos in extreme corners are inherently ambiguous.
 
 ---
 
@@ -314,9 +350,8 @@ detector = train(
 import cv2, sys
 sys.path.insert(0, "src")
 from logo_detector import LogoDetector
-from pathlib import Path
 
-detector = LogoDetector.load("checkpoints/best.pt")
+detector = LogoDetector.load("checkpoints/best_20k.pt")  # or best.pt
 
 bgr = cv2.imread("my_photo.jpeg")
 rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
@@ -331,7 +366,6 @@ print(f"Logo centroid → ({int(x*W)} px, {int(y*H)} px)")
 
 ```python
 import matplotlib.pyplot as plt
-import matplotlib.patches as patches
 
 fig, ax = plt.subplots(1, 1, figsize=(8, 6))
 ax.imshow(rgb)
@@ -349,34 +383,54 @@ plt.show()
 
 ### Script: `test_inference.py`
 
-Batch inference on a directory of real images with an interactive GUI:
+Batch inference on a directory of real images with optional interactive GUI:
 
 ```bash
+# Default: uses checkpoints/best.pt, reads from test_images/, writes to test_results/
 python src/test_inference.py
+
+# With explicit arguments
+python src/test_inference.py \
+    --checkpoint checkpoints/best_20k.pt \
+    --input      test_images \
+    --output     test_results
 ```
+
+**CLI Arguments:**
+
+| Argument | Default | Description |
+|---|---|---|
+| `--checkpoint` | `checkpoints/best.pt` | Path to the trained model weights (.pt file). |
+| `--input` | `test_images` | Directory containing the images to test (recursive). |
+| `--output` | `test_results` | Directory where annotated images will be saved. |
 
 **How it works:**
 
-1. Reads all images in `test_images/` (recursive)
-2. For each image:
-   - Loads with OpenCV (BGR)
-   - Runs forward pass: `detector.predict(rgb)`
-   - Denormalizes coordinates: `px = x_norm * W`, `py = y_norm * H`
-   - Draws a **red crosshair** (circle + cross) with black shadow
-   - Saves the annotated image to `test_results/pred_{filename}`
-   - Shows a GUI window (OpenCV): **PRESS ANY KEY TO CONTINUE**
+1. Reads all images in `--input` (recursive, case-insensitive extensions).
+2. Auto-detects headless environments (Colab, servers without `$DISPLAY`) and disables GUI accordingly.
+3. Forces CPU for maximum compatibility across environments.
+4. For each image:
+   - Loads with OpenCV (BGR → RGB).
+   - Runs forward pass: `detector.predict(rgb, device=device)`.
+   - Denormalizes coordinates: `px = x_norm * W`, `py = y_norm * H`.
+   - Draws a **red crosshair** (circle + cross) with dynamic shadow offset.
+   - Saves the annotated image to `--output/pred_{filename}`.
+   - Shows a GUI window if a display is available: **PRESS ANY KEY TO CONTINUE**.
 
 **Crosshair parameters:**
 
 | Parameter | Formula | Description |
 |---|---|---|
-| Radius | `max(10, min(H,W) * 0.03)` | Dynamic scale: 3% of the short side |
-| Thickness | `max(2, min(H,W) * 0.004)` | Dynamic scale: 0.4% of the short side |
-| Color | `(0, 0, 255)` BGR | Bright red |
-| Shadow | Offset `(+1, +1)` px, black | Improves visibility on light backgrounds |
+| Radius | `max(10, min(H,W) * 0.03)` | Dynamic scale: 3% of the short side. |
+| Thickness | `max(2, min(H,W) * 0.004)` | Dynamic scale: 0.4% of the short side. |
+| Shadow offset | `max(1, thickness / 2)` | Scales with thickness for consistent look. |
+| Color | `(0, 0, 255)` BGR | Bright red. |
+| Shadow | Black, offset by shadow offset px | Improves visibility on light backgrounds. |
 
 **Console output:**
 ```
+[INFO] Loading detector from checkpoints/best_20k.pt on cpu...
+  Checkpoint loaded ← checkpoints/best_20k.pt  (device: cpu)
 [INFO] Running inference on 12 images...
 
 -> photo_001.jpg            | Predicted centroid: ( 342 px,  256 px)
@@ -395,23 +449,24 @@ On real images (logo printed/projected in environment), performance varies:
 
 **Possible improvements:**
 1. Increase dataset size (20k → 50k+ samples).
-2. Less extreme augmentation (rotation ±90° instead of ±180°).
-3. Collect photos and fine-tune.
+2. Collect real photos and fine-tune the model.
+3. Reduce the `scale` lower bound in the spatial transform to reduce very-small-logo samples.
 
 ---
 
 ## Current limitations
 
 1. **Synthetic ⇒ real domain gap:**
-   - The model is trained on perfect compositing with soft shadows
-   - Real images: reflections, optical distortions, aggressive JPEG compression
+   - The model is trained on perfect compositing with soft shadows.
+   - Real images: reflections, optical distortions, aggressive JPEG compression.
 
-3. **Background diversity:**
-   - The dataset generator uses random ImageNet backgrounds.
-   - Real scenes: specific contexts (offices, trade show booths) with recurring patterns
+2. **Background diversity:**
+   - The dataset generator uses the `sample_background/` pool (~1000 images) or the full MIT Indoor Scenes dataset.
+   - Real scenes: specific contexts (offices, trade show booths) with recurring patterns.
 
-4. **Single-scale training:**
-   - Fixed resize to 224×224 loses information for very small logos (<5% of the image)
+3. **Single-scale training:**
+   - Fixed resize to 224×224 loses information for very small logos (<5% of the image).
+
 ---
 
 ## Troubleshooting
@@ -421,10 +476,10 @@ On real images (logo printed/projected in environment), performance varies:
 **Solution:** Module A does **not** depend on pipelime — only the dataset generator (Module B) does.
 
 ```bash
-# Required for Module A
+# Required for Module A only
 pip install torch torchvision opencv-python numpy tqdm
 ```
-> *Remeber to install torch\* according to your GPU (if any/wanted).*
+> *Remember to install torch according to your GPU manufacturer (NVIDIA/AMD/Intel).*
 
 ### CUDA out of memory during training
 
@@ -436,28 +491,28 @@ python src/logo_detector.py --train --batch_size 16
 **Solution 2:** Train on CPU (much slower)
 ```python
 from logo_detector import train
+import torch
 train(..., device=torch.device("cpu"))
 ```
 
 ### Validation accuracy stuck at ~50%
 
 **Possible causes:**
-1. Dataset too small (<5k samples)
-2. Augmentation misconfigured in Module B
-3. Learning rate too high or too low
+1. Dataset too small (<5k samples).
+2. Augmentation misconfigured in Module B.
+3. Learning rate too high or too low.
 
 **Debugging:**
 ```python
-# Check coordinate distribution in the dataset
 import json
 from pathlib import Path
+import numpy as np
 
 coords = []
 for f in Path("generated_dataset/data").glob("*_metadata.json"):
     meta = json.loads(f.read_text())
     coords.append((meta["x"], meta["y"]))
 
-import numpy as np
 print("X range:", np.min([c[0] for c in coords]), np.max([c[0] for c in coords]))
 print("Y range:", np.min([c[1] for c in coords]), np.max([c[1] for c in coords]))
 # Both should cover [0, 1] uniformly
@@ -475,13 +530,13 @@ python src/logo_detector.py --train --seed 42
 ```
 
 **Seed controls:**
-- Random train/val split
-- Weight initialization (Xavier is already deterministic)
-- Dropout mask during training
+- Random train/val split.
+- Weight initialization (Xavier is already deterministic).
+- Dropout mask during training.
 
 **Does not control:**
-- CUDA non-deterministic ops (conv backward)
-- DataLoader workers (if `num_workers > 0`)
+- CUDA non-deterministic ops (conv backward).
+- DataLoader workers (if `num_workers > 0`).
 
 For full reproducibility:
 ```python
