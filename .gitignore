@@ -10,8 +10,10 @@ backgrounds/*
 generated_dataset/*
 data/*
 *NOTES*.md
-demo*.py
+
 demo*/
+*evaluate_model.py
+*plot*
 
 # Model checkpoints
 *.pt

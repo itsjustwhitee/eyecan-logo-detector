@@ -101,7 +101,7 @@ class LogoDetector(nn.Module):
             nn.Hardswish(),
             nn.Dropout(p=dropout),
             nn.Linear(128, 2),
-            nn.Sigmoid(),                         # → (B, 2) ∈ (0, 1)
+            nn.Sigmoid(),                         # => (B, 2) ∈ (0, 1)
         )
 
         # Initialise the head with small weights for a stable start
@@ -204,7 +204,7 @@ _IMAGENET_MEAN = (0.485, 0.456, 0.406)
 _IMAGENET_STD  = (0.224, 0.224, 0.224)
 
 _preprocess = transforms.Compose([
-    transforms.ToTensor(),                           # HWC uint8 → CHW float [0,1]
+    transforms.ToTensor(),                           # HWC uint8 -> CHW float [0,1]
     transforms.Resize((224, 224), antialias=True),   # MobileNet canonical size
     transforms.Normalize(_IMAGENET_MEAN, _IMAGENET_STD),
 ])
@@ -291,7 +291,7 @@ def pixel_accuracy(
 ) -> float:
     """Fraction of predictions within *threshold_pct* of the shortest edge.
 
-    The challenge requires max error ≤ 10 % of the shorter dimension
+    The challenge requires max error 10 % of the shorter dimension
     (e.g. 40 px for 640×480).  This metric reports how often the model
     satisfies that constraint over the given batch / epoch.
 
@@ -356,7 +356,7 @@ def train(
         img_size:     (W, H) used only by the accuracy metric.
         dropout:      Dropout prob in the regression head.
         seed:         RNG seed for the train/val split.
-        device:       Torch device.  Auto-detected when None.
+        device:       Torch device. Auto-detected when None.
 
     Returns:
         Best LogoDetector (weights restored from ``best.pt``).
@@ -540,54 +540,3 @@ def _main() -> None:
 
 if __name__ == "__main__":
     _main()
-
-
-# ---------------------------------------------------------------------------
-# Notebook usage example
-# ---------------------------------------------------------------------------
-# The block below is not executed when running from the CLI.
-# Copy it into a Jupyter / Colab cell to get started quickly.
-#
-# ── Training ────────────────────────────────────────────────────────────────
-#
-#   import sys
-#   sys.path.insert(0, "src")
-#   from logo_detector import train
-#   from pathlib import Path
-#
-#   detector = train(
-#       dataset_dir = Path("generated_dataset"),
-#       output_dir  = Path("checkpoints"),
-#       epochs      = 30,
-#       lr          = 1e-3,
-#       batch_size  = 32,
-#   )
-#
-# ── Inference ────────────────────────────────────────────────────────────────
-#
-#   import cv2, sys
-#   sys.path.insert(0, "src")
-#   from logo_detector import LogoDetector
-#   from pathlib import Path
-#
-#   detector = LogoDetector.load("checkpoints/best.pt")
-#
-#   bgr = cv2.imread("my_photo.jpeg")
-#   rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-#   x, y = detector.predict(rgb)
-#   H, W = bgr.shape[:2]
-#   print(f"Logo centroid → ({int(x*W)} px, {int(y*H)} px)")
-#
-# ── Visualise ────────────────────────────────────────────────────────────────
-#
-#   import matplotlib.pyplot as plt
-#   import matplotlib.patches as patches
-#
-#   fig, ax = plt.subplots(1, 1, figsize=(8, 6))
-#   ax.imshow(rgb)
-#   px, py = int(x * W), int(y * H)
-#   ax.plot(px, py, "r+", markersize=18, markeredgewidth=3, label="predicted")
-#   ax.set_title(f"Logo centroid: ({px}, {py})")
-#   ax.legend()
-#   plt.tight_layout()
-#   plt.show()

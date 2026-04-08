@@ -421,7 +421,7 @@ def generate_dataset(
                 _write_batch(batch, output, start_index=total_written,
                              num_workers=num_workers)
                 total_written += len(batch)
-                batch = []  # release Sample objects → RAM freed
+                batch = []  # release Sample objects -> RAM freed
 
     if total_written < num_samples:
         print(f"\n[WARNING] Only {total_written}/{num_samples} samples written "
